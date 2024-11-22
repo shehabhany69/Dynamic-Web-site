@@ -1,0 +1,52 @@
+image: public.ecr.aws/aws-cli/aws-cli:latest
+
+stages:
+  - deploy_R53Rnetwork
+#  - deploy_R53Rwebapp
+
+#variables:
+#  REGION:
+#    description: AWS region to create resources in
+#    value: "us-east-1"
+#
+#  NetworkStackName:
+#    description: Name of the CloudFormation stack for the network resources ex "R53Rnetwork"
+#    value: "R53Rnetwork"
+#
+#  WebappStackName:
+#    description: Name of the CloudFormation stack for the webapp ex "R53Rwebapp"
+#    value: "R53Rwebapp"
+
+#  AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID   # From GitLab CI/CD environment variables
+#  AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY   # From GitLab CI/CD environment variables
+
+deploy_network_stack:
+  stage: deploy_R53Rnetwork
+  before_script:
+#    - mkdir -p ~/.aws
+#    # Save the AWSCONFIG variable as the AWS config file
+#    - echo $AWSCONFIG > ~/.aws/config
+#    - source ~/.aws/config
+    - echo "#####################################"
+
+  script:
+    - echo "!!!!!!!!!!!"
+#    - echo Creating network stack ${NetworkStackName}
+#    - aws s3 ls
+#    - aws cloudformation create-stack --stack-name ${NetworkStackName} --template-body file://NetworkStack.yml --region &{REGION} --output table
+#    - aws cloudformation wait stack-create-complete --stack-name ${NetworkStackName} --region &{REGION}
+
+#deploy_webapp_stack:
+#  stage: deploy_R53Rwebapp
+#  needs:
+#    - deploy_network_stack
+#  before_script:
+#    - aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
+#    - aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
+#    - aws configure set region "$REGION"
+#  script:
+#    - echo Creating Webapp stack ${WebappStackName}..."
+#    - aws cloudformation create-stack --stack-name ${WebappStackName} --template-body file://webapp.yaml --parameters ParameterKey=NetworkStackName,ParameterValue=${NetworkStackName} --capabilities CAPABILITY_NAMED_IAM --region &{REGION} --output table
+#    - aws cloudformation wait stack-create-complete --stack-name ${WebappStackName} --region &{REGION}
+
+    
