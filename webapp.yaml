@@ -1,0 +1,356 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This template creates Application
+
+# This template creates:
+#   Application Load Balancer
+#   Launch Template
+#   ROLES & POLICIES section
+#   Auto-Scaling Group
+
+
+
+############################################################
+#                    PARAMETERS
+############################################################
+
+Parameters:
+  NetworkStackName:
+    Description: >-
+      Name of an active CloudFormation stack that contains the networking
+      resources, such as the VPC and subnet that will be used in this stack.
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
+    Default: R53Rnetwork
+
+  AmazonLinuxAMIID:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+
+  WebAppUserData:
+    Type: String
+    Default: |
+      #!/bin/bash
+      # Fetch the instance ID
+      #INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+      # Update the system and install Apache and AWS CLI then loop on S3 images to display them on EC2 instance
+      # Install Apache and AWS CLI
+      yum update -y
+      yum install -y httpd aws-cli
+
+      INSTANCE_ID=$(ec2-metadata --instance-id)
+      INSTANCE_ID_Edited=echo $INSTANCE_ID | cut -c 14-
+
+      # Start and enable Apache
+      systemctl start httpd
+      systemctl enable httpd
+      ############################################################## 
+
+      sudo cat <<EOL > /var/www/html/index.html
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Display Images from S3</title>
+      </head>
+      <body>
+        <h1>Hello from $(hostname -f),  And $INSTANCE_ID , data is on S3 ! </h1>
+      
+        <!-- Display images from the S3 bucket -->
+        <img src="https://route53rangers.s3.amazonaws.com/beach.jpg" alt="Image 1" width="400">
+        <img src="https://route53rangers.s3.amazonaws.com/coffee.jpg" alt="Image 2" width="400">
+        <!--img src="https://your-bucket-name.s3.amazonaws.com/image3.jpg" alt="Image 3" width="400">
+      
+      <!-- Assuming we have a Video to be displayed from S3 ... -->
+        <h2>Video</h2>
+        <video wi</h2>600" controls>
+        <video width="600" controls>https://route53rangers.s3.amazonaws.com/vecteezy_4k-nature-of-clouds-view-from-an-airplane-window-travel_39227344.mov" type="video/mp4">
+        </video>
+      </body>
+      </html>
+      EOL
+      ############################################################# 
+      ## Scripts for Monitoring
+
+      sudo yum install amazon-cloudwatch-agent -y
+      
+      NAMESPACE="$INSTANCE_ID_Edited/url_status"
+      
+      
+      url='http://localhost/'
+      status_code=$(curl --head --location --connect-timeout 5 --write-out %{http_code} --silent --output /dev/null ${url})
+      
+      if [[ "$status_code" -ne 200 ]] ; then
+        echo "service is not up status code = $status_code, service httpd will be restarted"
+        sudo service httpd restart
+      else
+        echo "service httpd is up and running"
+        #exit 0
+      fi
+      
+      
+      aws cloudwatch put-metric-data \
+        --metric-name "URL_status" \
+        --namespace "$NAMESPACE" \
+        --dimensions "InstanceId=$INSTANCE_ID_Edited" \
+        --value "$status_code" \
+        --unit "Count"
+        
+Resources:
+############################################################
+#               APPLICATION LOAD BALANCER
+############################################################
+#Create an Application Load Balancer
+  R53RLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: R53RLoadBalancer
+      SecurityGroups:
+        - Fn::ImportValue: !Sub ${NetworkStackName}-ALBSG
+      Subnets: 
+        - Fn::ImportValue: !Sub ${NetworkStackName}-PublicSubnet1
+        - Fn::ImportValue: !Sub ${NetworkStackName}-PublicSubnet2 
+
+#Create a Listener on Port 80
+  ALBListener:
+    Type : AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn: !Ref R53RLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+# Create a Target Group
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: 200,302
+      Name: project-tg
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: 
+        Fn::ImportValue: !Sub ${NetworkStackName}-VPCID
+
+############################################################
+#                  LUNCH TEMPLATES
+############################################################
+
+  #Create the Launch Template
+  R53RLaunchTemplate: 
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: R53RLaunchTemplate
+      LaunchTemplateData: 
+        ImageId: !Ref AmazonLinuxAMIID # It is the old version (Linux 2 AMI).
+        InstanceType: t2.micro
+        KeyName: AWS_KEY2 #KeyName of the Lab
+        Monitoring:
+          Enabled: true # This is for the detailed CloudWatch monitoring
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub ${NetworkStackName}-WebAppSG
+        IamInstanceProfile:
+          Name: !Ref RangersInstanceProfile
+        UserData: 
+          Fn::Base64: !Ref WebAppUserData
+
+############################################################
+#                ROLES & POLICIES
+############################################################
+
+  # Create EC2 role for S3 access
+  RangerswebappRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Role for EC2 instances to access S3, Cloudwatch and LB
+      RoleName: RangerswebappRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+        - arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess
+      Policies:
+        - PolicyName: WebserverAgentCustomPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - ec2:*
+                Resource: "*"
+              - Effect: Allow
+                Action: 
+                  - elasticloadbalancing:*
+                Resource: "*"
+              - Effect: Allow
+                Action: 
+                  - cloudwatch:*
+                Resource: "*"
+              - Effect: Allow
+                Action: 
+                  - autoscaling:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                Resource:
+                  - arn:aws:s3:::route53rangers
+                  - arn:aws:s3:::route53rangers/*
+              - Effect: Allow
+                Action: 
+                  - iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName:
+                      - autoscaling.amazonaws.com
+                      - ec2scheduled.amazonaws.com
+                      - elasticloadbalancing.amazonaws.com
+                      - spot.amazonaws.com
+                      - spotfleet.amazonaws.com
+                      - transitgateway.amazonaws.com
+
+  # Create IAM Instance Profile
+  RangersInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref RangerswebappRole
+
+############################################################
+#                  AUTO-SCALING GROUP
+############################################################
+
+#Create Auto Scaling Group
+  WebServerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: project-ASG
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub ${NetworkStackName}-PrivateSubnet1
+        - Fn::ImportValue: !Sub ${NetworkStackName}-PrivateSubnet2
+      HealthCheckGracePeriod: 300
+      HealthCheckType: ELB
+      LaunchTemplate:
+        LaunchTemplateName: R53RLaunchTemplate
+        Version: !GetAtt R53RLaunchTemplate.LatestVersionNumber
+      MinSize: 2
+      MaxSize: 3
+      DesiredCapacity: 2
+      Tags:
+        - Key: Name
+          Value: webapp
+          PropagateAtLaunch: true #To add the tag to all the EC2 instances that are created  
+        - Key: Project
+          Value: DEPI
+          PropagateAtLaunch: true #To add the tag to all the EC2 instances that are created            
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+
+  WebServerScaleUpPolicy: 
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
+      Cooldown: 60
+      ScalingAdjustment: 1
+  
+  WebServerScaleDownPolicy:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
+      Cooldown: 60
+      ScalingAdjustment: -1  
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-up if CPU > 90% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 90
+      AlarmActions:
+        - !Ref WebServerScaleUpPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref WebServerAutoScalingGroup
+      ComparisonOperator: GreaterThanThreshold
+
+  CPUAlarmLow:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: Scale-down if CPU < 70% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 70
+      AlarmActions:
+        - !Ref WebServerScaleDownPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref WebServerAutoScalingGroup
+      ComparisonOperator: LessThanThreshold
+
+
+############################################################
+#                  BASTION HOST
+############################################################
+
+  BastionHostInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: 't2.micro'
+      KeyName: AWS_KEY2
+      ImageId: !Ref AmazonLinuxAMIID
+      SubnetId:
+        Fn::ImportValue: !Sub ${NetworkStackName}-PublicSubnet1
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub ${NetworkStackName}-BastionSG
+      UserData:
+        Fn::Base64:
+          !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y aws-cli
+          yum install -y ec2-instance-connect
+          echo "AllowTcpForwarding yes" >> /etc/ssh/sshd_config
+          echo "GatewayPorts yes" >> /etc/ssh/sshd_config
+          systemctl restart ssh
+          echo "Bastion host setup complete" > /var/log/bastion_setup.log
+      Tags:
+        - Key: Name
+          Value: BastionHostInstance
+############################################################
+#                   OUTPUTS
+############################################################
+
+Outputs:
+  R53RLoadBalancerURL:
+    Description: DNS Name of the Application Load Balancer
+    Value: !GetAtt R53RLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-LoadBalancerDNS'
